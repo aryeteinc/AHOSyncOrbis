@@ -337,13 +337,25 @@ class ImageProcessorLaravel {
                         }
                     }
                     
+                    // Determinar si esta imagen debe ser destacada (si es la primera o tiene order_num = 0)
+                    $isFeatured = 0;
+                    if ($img['order_num'] === 0) {
+                        // Verificar si ya existe alguna imagen destacada para esta propiedad
+                        $featuredExists = $this->db->prepare("SELECT COUNT(*) FROM images WHERE property_id = ? AND is_featured = 1");
+                        $featuredExists->execute([$propertyId]);
+                        if ($featuredExists->fetchColumn() == 0) {
+                            // Si no hay imagen destacada, marcar esta como destacada
+                            $isFeatured = 1;
+                        }
+                    }
+                    
                     // Insertar nueva imagen
                     $stmt = $this->db->prepare("
                         INSERT INTO images (
-                            property_id, url, local_url, order_num, is_downloaded, 
+                            property_id, url, local_url, order_num, is_downloaded, is_featured,
                             laravel_disk, laravel_path, created_at, updated_at
                         ) VALUES (
-                            ?, ?, ?, ?, ?, ?, ?, NOW(), NOW()
+                            ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW()
                         )
                     ");
                     $stmt->execute([
@@ -352,6 +364,7 @@ class ImageProcessorLaravel {
                         $img['local_url'],
                         $img['order_num'],
                         $img['is_downloaded'] ?? 1,
+                        $isFeatured,
                         $laravelDisk,
                         $laravelPath
                     ]);

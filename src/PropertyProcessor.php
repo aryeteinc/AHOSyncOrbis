@@ -905,14 +905,15 @@ class PropertyProcessor {
         }
         
         // Verificar si hay imágenes para procesar
-        if (empty($property['imagenes']) || !is_array($property['imagenes'])) {
-            echo "Inmueble #{$property['ref']}: No hay imágenes para procesar\n";
-            return;
-        }
+        $hasImages = !empty($property['imagenes']) && is_array($property['imagenes']);
         
-        // Cargar la clase ImageProcessorLaravel si no está cargada
+        // Cargar las clases necesarias si no están cargadas
         if (!class_exists('ImageProcessorLaravel')) {
             require_once __DIR__ . '/ImageProcessorLaravel.php';
+        }
+        
+        if (!class_exists('ImageSynchronizer')) {
+            require_once __DIR__ . '/ImageSynchronizer.php';
         }
         
         // Obtener modo de almacenamiento de imágenes (local o laravel)
@@ -929,8 +930,32 @@ class PropertyProcessor {
             'images/inmuebles'
         );
         
-        // Procesar imágenes
-        echo "Inmueble #{$property['ref']}: Procesando " . count($property['imagenes']) . " imágenes...\n";
-        $imageProcessor->processImages($property['id'], $property['ref'], $property['imagenes']);
+        // Crear instancia del sincronizador de imágenes
+        $imageSynchronizer = new ImageSynchronizer(
+            $this->db,
+            $this->imagesFolder,
+            $imageProcessor,
+            $this->stats
+        );
+        
+        // Sincronizar imágenes (añadir nuevas, actualizar modificadas, eliminar obsoletas)
+        if ($hasImages) {
+            echo "Inmueble #{$property['ref']}: Sincronizando " . count($property['imagenes']) . " imágenes...\n";
+            $result = $imageSynchronizer->synchronizeImages($property['id'], $property['ref'], $property['imagenes']);
+            
+            echo "Inmueble #{$property['ref']}: Sincronización de imágenes completada - ";
+            echo "{$result['added']} añadidas, {$result['updated']} actualizadas, {$result['deleted']} eliminadas\n";
+        } else {
+            echo "Inmueble #{$property['ref']}: No hay imágenes para procesar\n";
+            
+            // Si no hay imágenes en la API pero podría haber imágenes existentes, eliminarlas
+            $result = $imageSynchronizer->synchronizeImages($property['id'], $property['ref'], []);
+            
+            if ($result['deleted'] > 0) {
+                echo "Inmueble #{$property['ref']}: Se eliminaron {$result['deleted']} imágenes obsoletas\n";
+            }
+        }
     }
 }
+
+// ... (rest of the code remains the same)

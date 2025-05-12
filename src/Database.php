@@ -18,12 +18,20 @@ class Database {
                 EnvLoader::load($envPath);
             }
             
-            // Obtener configuración de la base de datos desde variables de entorno
-            $host = getenv('DB_HOST') ?: 'localhost';
-            $port = getenv('DB_PORT') ?: '3306';
-            $database = getenv('DB_DATABASE') ?: 'OrbisAHOPHP';
-            $username = getenv('DB_USERNAME') ?: 'root';
-            $password = getenv('DB_PASSWORD') ?: '';
+            // Configuración directa de la base de datos para Namecheap
+            // Modifica estos valores con tus credenciales reales de Namecheap
+            $host = 'localhost'; // Normalmente es 'localhost' en Namecheap
+            $port = '3306';
+            $database = 'tu_usuario_nombrebd'; // Reemplaza con tu nombre de base de datos real
+            $username = 'tu_usuario_nombreusuario'; // Reemplaza con tu nombre de usuario real
+            $password = 'tu_contraseña'; // Reemplaza con tu contraseña real
+            
+            // Intenta obtener valores desde .env solo si existen
+            if (getenv('DB_HOST')) $host = getenv('DB_HOST');
+            if (getenv('DB_PORT')) $port = getenv('DB_PORT');
+            if (getenv('DB_DATABASE')) $database = getenv('DB_DATABASE');
+            if (getenv('DB_USERNAME')) $username = getenv('DB_USERNAME');
+            if (getenv('DB_PASSWORD')) $password = getenv('DB_PASSWORD');
             
             // Usar formato adecuado para conexión TCP
             $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";

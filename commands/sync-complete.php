@@ -300,6 +300,7 @@ if (!$imagesExists) {
             local_url VARCHAR(255) NULL,
             order_num INT DEFAULT 0,
             is_downloaded TINYINT(1) DEFAULT 0,
+            is_featured TINYINT(1) DEFAULT 0,
             laravel_disk VARCHAR(50) NULL,
             laravel_path VARCHAR(255) NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -471,18 +472,35 @@ if (!$propertyCharacteristicsExists) {
             id INT AUTO_INCREMENT PRIMARY KEY,
             property_id INT NOT NULL,
             characteristic_id INT NOT NULL,
-            value VARCHAR(255) NULL,
+            value TEXT NULL,
             is_numeric TINYINT(1) DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE,
-            FOREIGN KEY (characteristic_id) REFERENCES characteristics(id) ON DELETE CASCADE,
             INDEX (property_id),
             INDEX (characteristic_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
-    
     echo "Tabla 'property_characteristics' creada correctamente\n";
+}
+
+// 11. Tabla excluded_properties
+$excludedPropertiesExists = $connection->query("SHOW TABLES LIKE 'excluded_properties'")->rowCount() > 0;
+if (!$excludedPropertiesExists) {
+    echo "Creando tabla 'excluded_properties'...\n";
+    $connection->exec("
+        CREATE TABLE excluded_properties (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            identifier VARCHAR(50) NOT NULL,
+            identifier_type ENUM('id', 'ref', 'sync_code') NOT NULL DEFAULT 'ref',
+            reason VARCHAR(255) NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY (identifier, identifier_type),
+            INDEX (identifier),
+            INDEX (identifier_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    echo "Tabla 'excluded_properties' creada correctamente\n";
 }
 
 echo "Todas las tablas necesarias existen\n\n";
@@ -563,6 +581,23 @@ if (isset($data['data']) && is_array($data['data'])) {
         'errores' => 0
     ];
     
+    // Obtener lista de propiedades excluidas
+    $excludedProperties = [
+        'id' => [],
+        'ref' => [],
+        'sync_code' => []
+    ];
+    
+    $excludedStmt = $connection->query("SELECT identifier, identifier_type, reason FROM excluded_properties");
+    while ($row = $excludedStmt->fetch(PDO::FETCH_ASSOC)) {
+        $excludedProperties[$row['identifier_type']][$row['identifier']] = $row['reason'];
+    }
+    
+    $totalExcluded = count($excludedProperties['id']) + count($excludedProperties['ref']) + count($excludedProperties['sync_code']);
+    if ($totalExcluded > 0) {
+        echo "Se encontraron {$totalExcluded} propiedades excluidas de la sincronización\n";
+    }
+    
     // Procesar propiedades
     $propertyProcessor = new PropertyProcessor(
         $connection,
@@ -572,12 +607,276 @@ if (isset($data['data']) && is_array($data['data'])) {
         $stats
     );
     
+    // Eliminar propiedades excluidas que existen en la base de datos
+    // 1. Primero, procesar exclusiones por ID
+    foreach ($excludedProperties['id'] as $excludedId => $reason) {
+        // Verificar si la propiedad existe en la base de datos
+        $stmt = $connection->prepare("SELECT id, ref FROM properties WHERE id = ?");
+        $stmt->execute([$excludedId]);
+        $property = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($property) {
+            $propertyId = $property['id'];
+            $propertyRef = $property['ref'];
+            echo "\nEliminando propiedad excluida con ID #{$excludedId} (Ref: {$propertyRef})\n";
+            echo "Razón de exclusión: " . ($reason ?: 'No especificada') . "\n";
+            
+            // Eliminar imágenes físicas
+            echo "Eliminando imágenes físicas...\n";
+            $stmt = $connection->prepare("SELECT local_url FROM images WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $images = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            $deletedImages = 0;
+            foreach ($images as $imagePath) {
+                if (!empty($imagePath) && file_exists($imagePath)) {
+                    unlink($imagePath);
+                    $deletedImages++;
+                }
+            }
+            
+            // Eliminar directorios vacíos
+            $propertyDir = $imagesFolder . '/property_' . $excludedRef;
+            $propertyDirAlt = $imagesFolder . '/' . $excludedRef;
+            
+            if (is_dir($propertyDir)) {
+                $files = scandir($propertyDir);
+                $isEmpty = count($files) <= 2; // Solo . y ..
+                
+                if ($isEmpty) {
+                    rmdir($propertyDir);
+                    echo "Directorio vacío eliminado: $propertyDir\n";
+                }
+            }
+            
+            if (is_dir($propertyDirAlt)) {
+                $files = scandir($propertyDirAlt);
+                $isEmpty = count($files) <= 2; // Solo . y ..
+                
+                if ($isEmpty) {
+                    rmdir($propertyDirAlt);
+                    echo "Directorio vacío eliminado: $propertyDirAlt\n";
+                }
+            }
+            
+            // Eliminar registros de la base de datos
+            echo "Eliminando registros de la base de datos...\n";
+            
+            // Eliminar características
+            $stmt = $connection->prepare("DELETE FROM property_characteristics WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $deletedCharacteristics = $stmt->rowCount();
+            
+            // Eliminar imágenes
+            $stmt = $connection->prepare("DELETE FROM images WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $deletedImageRecords = $stmt->rowCount();
+            
+            // Eliminar propiedad
+            $stmt = $connection->prepare("DELETE FROM properties WHERE id = ?");
+            $stmt->execute([$propertyId]);
+            
+            echo "Propiedad excluida eliminada con éxito:\n";
+            echo "- Imágenes físicas eliminadas: $deletedImages\n";
+            echo "- Registros de imágenes eliminados: $deletedImageRecords\n";
+            echo "- Características eliminadas: $deletedCharacteristics\n";
+            
+            // Actualizar estadísticas
+            $stats['inmuebles_procesados']++;
+        }
+    }
+    
+    // 2. Procesar exclusiones por referencia (ref)
+    foreach ($excludedProperties['ref'] as $excludedRef => $reason) {
+        // Verificar si la propiedad existe en la base de datos
+        $stmt = $connection->prepare("SELECT id, ref FROM properties WHERE ref = ?");
+        $stmt->execute([$excludedRef]);
+        $property = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($property) {
+            $propertyId = $property['id'];
+            $propertyRef = $property['ref'];
+            echo "\nEliminando propiedad excluida con Ref #{$excludedRef} (ID: {$propertyId})\n";
+            echo "Razón de exclusión: " . ($reason ?: 'No especificada') . "\n";
+            
+            // Eliminar imágenes físicas
+            echo "Eliminando imágenes físicas...\n";
+            $stmt = $connection->prepare("SELECT local_url FROM images WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $images = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            $deletedImages = 0;
+            foreach ($images as $imagePath) {
+                if (!empty($imagePath) && file_exists($imagePath)) {
+                    unlink($imagePath);
+                    $deletedImages++;
+                }
+            }
+            
+            // Eliminar directorios vacíos
+            $propertyDir = $imagesFolder . '/property_' . $propertyRef;
+            $propertyDirAlt = $imagesFolder . '/' . $propertyRef;
+            
+            if (is_dir($propertyDir)) {
+                $files = scandir($propertyDir);
+                $isEmpty = count($files) <= 2; // Solo . y ..
+                
+                if ($isEmpty) {
+                    rmdir($propertyDir);
+                    echo "Directorio vacío eliminado: $propertyDir\n";
+                }
+            }
+            
+            if (is_dir($propertyDirAlt)) {
+                $files = scandir($propertyDirAlt);
+                $isEmpty = count($files) <= 2; // Solo . y ..
+                
+                if ($isEmpty) {
+                    rmdir($propertyDirAlt);
+                    echo "Directorio vacío eliminado: $propertyDirAlt\n";
+                }
+            }
+            
+            // Eliminar registros de la base de datos
+            echo "Eliminando registros de la base de datos...\n";
+            
+            // Eliminar características
+            $stmt = $connection->prepare("DELETE FROM property_characteristics WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $deletedCharacteristics = $stmt->rowCount();
+            
+            // Eliminar imágenes
+            $stmt = $connection->prepare("DELETE FROM images WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $deletedImageRecords = $stmt->rowCount();
+            
+            // Eliminar propiedad
+            $stmt = $connection->prepare("DELETE FROM properties WHERE id = ?");
+            $stmt->execute([$propertyId]);
+            
+            echo "Propiedad excluida eliminada con éxito:\n";
+            echo "- Imágenes físicas eliminadas: $deletedImages\n";
+            echo "- Registros de imágenes eliminados: $deletedImageRecords\n";
+            echo "- Características eliminadas: $deletedCharacteristics\n";
+            
+            // Actualizar estadísticas
+            $stats['inmuebles_procesados']++;
+        }
+    }
+    
+    // 3. Procesar exclusiones por código de sincronización (sync_code)
+    foreach ($excludedProperties['sync_code'] as $excludedSyncCode => $reason) {
+        // Verificar si la propiedad existe en la base de datos
+        $stmt = $connection->prepare("SELECT id, ref FROM properties WHERE sync_code = ?");
+        $stmt->execute([$excludedSyncCode]);
+        $property = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($property) {
+            $propertyId = $property['id'];
+            $propertyRef = $property['ref'];
+            echo "\nEliminando propiedad excluida con Sync Code #{$excludedSyncCode} (ID: {$propertyId}, Ref: {$propertyRef})\n";
+            echo "Razón de exclusión: " . ($reason ?: 'No especificada') . "\n";
+            
+            // Eliminar imágenes físicas
+            echo "Eliminando imágenes físicas...\n";
+            $stmt = $connection->prepare("SELECT local_url FROM images WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $images = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            $deletedImages = 0;
+            foreach ($images as $imagePath) {
+                if (!empty($imagePath) && file_exists($imagePath)) {
+                    unlink($imagePath);
+                    $deletedImages++;
+                }
+            }
+            
+            // Eliminar directorios vacíos
+            $propertyDir = $imagesFolder . '/property_' . $propertyRef;
+            $propertyDirAlt = $imagesFolder . '/' . $propertyRef;
+            
+            if (is_dir($propertyDir)) {
+                $files = scandir($propertyDir);
+                $isEmpty = count($files) <= 2; // Solo . y ..
+                
+                if ($isEmpty) {
+                    rmdir($propertyDir);
+                    echo "Directorio vacío eliminado: $propertyDir\n";
+                }
+            }
+            
+            if (is_dir($propertyDirAlt)) {
+                $files = scandir($propertyDirAlt);
+                $isEmpty = count($files) <= 2; // Solo . y ..
+                
+                if ($isEmpty) {
+                    rmdir($propertyDirAlt);
+                    echo "Directorio vacío eliminado: $propertyDirAlt\n";
+                }
+            }
+            
+            // Eliminar registros de la base de datos
+            echo "Eliminando registros de la base de datos...\n";
+            
+            // Eliminar características
+            $stmt = $connection->prepare("DELETE FROM property_characteristics WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $deletedCharacteristics = $stmt->rowCount();
+            
+            // Eliminar imágenes
+            $stmt = $connection->prepare("DELETE FROM images WHERE property_id = ?");
+            $stmt->execute([$propertyId]);
+            $deletedImageRecords = $stmt->rowCount();
+            
+            // Eliminar propiedad
+            $stmt = $connection->prepare("DELETE FROM properties WHERE id = ?");
+            $stmt->execute([$propertyId]);
+            
+            echo "Propiedad excluida eliminada con éxito:\n";
+            echo "- Imágenes físicas eliminadas: $deletedImages\n";
+            echo "- Registros de imágenes eliminados: $deletedImageRecords\n";
+            echo "- Características eliminadas: $deletedCharacteristics\n";
+            
+            // Actualizar estadísticas
+            $stats['inmuebles_procesados']++;
+        }
+    }
+    
     $count = 0;
     foreach ($properties as $property) {
         $count++;
         $percentage = round(($count / $propertiesToProcess) * 100);
         
         $ref = isset($property['ref']) ? $property['ref'] : '';
+        $id = isset($property['id']) ? $property['id'] : '';
+        $syncCode = isset($property['codigo_sincronizacion']) ? $property['codigo_sincronizacion'] : '';
+        
+        // Verificar si la propiedad está excluida por alguno de sus identificadores
+        $isExcluded = false;
+        $exclusionReason = '';
+        
+        // Verificar por ID
+        if ($id && isset($excludedProperties['id'][$id])) {
+            $isExcluded = true;
+            $exclusionReason = $excludedProperties['id'][$id] ?: 'No especificada';
+        }
+        // Verificar por referencia
+        elseif ($ref && isset($excludedProperties['ref'][$ref])) {
+            $isExcluded = true;
+            $exclusionReason = $excludedProperties['ref'][$ref] ?: 'No especificada';
+        }
+        // Verificar por código de sincronización
+        elseif ($syncCode && isset($excludedProperties['sync_code'][$syncCode])) {
+            $isExcluded = true;
+            $exclusionReason = $excludedProperties['sync_code'][$syncCode] ?: 'No especificada';
+        }
+        
+        if ($isExcluded) {
+            echo "\nInmueble #{$count}/{$propertiesToProcess} ({$percentage}%): Ref {$ref} - EXCLUIDO DE LA SINCRONIZACIÓN\n";
+            echo "Razón: {$exclusionReason}\n";
+            continue; // Saltar esta propiedad
+        }
+        
         echo "\nProcesando inmueble #{$count}/{$propertiesToProcess} ({$percentage}%): Ref {$ref}\n";
         
         try {
