@@ -1,0 +1,8 @@
+# Denegar acceso a todos los archivos
+Order deny,allow
+Deny from all
+
+# Permitir acceso a archivos específicos si es necesario
+# <Files "archivo-especifico.php">
+#    Allow from all
+# </Files>

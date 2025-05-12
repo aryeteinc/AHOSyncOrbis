@@ -1,0 +1,51 @@
+# Archivos de configuración con credenciales
+/config/.env
+
+# Archivos de logs
+/logs/*.log
+
+# Imágenes descargadas
+/public/images/*
+!/public/images/.gitkeep
+
+# Archivos temporales
+/tmp/*
+!/tmp/.gitkeep
+
+# Dependencias de Composer
+/vendor/
+composer.lock
+
+# Archivos de caché
+.phpunit.result.cache
+.php_cs.cache
+.php-cs-fixer.cache
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de IDE
+/.idea/
+/.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Archivos de respaldo
+*.bak
+*.swp
+*~
+
+# Archivos de entorno local
+.env.local
+.env.*.local
+
+# Archivos de base de datos SQLite
+*.sqlite
+*.sqlite3
+
+# Archivos de sesión
+/sessions/
+
+# Archivos de caché de aplicación
+/cache/
