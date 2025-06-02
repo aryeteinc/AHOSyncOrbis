@@ -201,48 +201,93 @@ class ImageSynchronizer {
                 continue;
             }
             
+            // Verificar si la imagen tiene metadatos de modificación
+            $lastModified = null;
+            if (is_array($image) && isset($image['last_modified'])) {
+                $lastModified = $image['last_modified'];
+            }
+            
+            // Si tenemos metadatos de modificación y la imagen no ha cambiado, no la descargamos
+            if ($lastModified && isset($existingImage['last_modified']) && $lastModified == $existingImage['last_modified']) {
+                echo "Propiedad #{$propertyRef}: Imagen no ha cambiado según metadatos: {$imageUrl}\n";
+                continue;
+            }
+            
+            // Verificar si la imagen ha cambiado usando HEAD request para obtener tamaño/fecha sin descargar
+            $needsUpdate = false;
+            
             try {
-                // Descargar la imagen temporalmente para comparar
-                $tempFile = tempnam(sys_get_temp_dir(), 'img_');
-                $imageData = @file_get_contents($imageUrl);
-                
-                if ($imageData === false) {
-                    echo "Propiedad #{$propertyRef}: No se pudo descargar la imagen para comparación: {$imageUrl}\n";
-                    continue;
+                $headers = get_headers($imageUrl, 1);
+                if ($headers !== false) {
+                    // Verificar si el tamaño o la fecha de modificación han cambiado
+                    $remoteSize = isset($headers['Content-Length']) ? (int)$headers['Content-Length'] : 0;
+                    $remoteModified = isset($headers['Last-Modified']) ? $headers['Last-Modified'] : '';
+                    
+                    $localSize = filesize($localPath);
+                    
+                    if ($remoteSize > 0 && $localSize > 0 && $remoteSize != $localSize) {
+                        echo "Propiedad #{$propertyRef}: Tamaño de imagen ha cambiado: {$imageUrl} (Local: {$localSize}, Remoto: {$remoteSize})\n";
+                        $needsUpdate = true;
+                    } else {
+                        echo "Propiedad #{$propertyRef}: Imagen no ha cambiado según tamaño: {$imageUrl}\n";
+                    }
+                } else {
+                    // Si no podemos obtener los headers, asumimos que necesita actualización
+                    $needsUpdate = true;
                 }
-                
-                file_put_contents($tempFile, $imageData);
-                
-                // Calcular hashes para comparar
-                $existingHash = md5_file($localPath);
-                $newHash = md5_file($tempFile);
-                
-                // Si los hashes son diferentes, la imagen ha cambiado
-                if ($existingHash !== $newHash) {
-                    echo "Propiedad #{$propertyRef}: Imagen actualizada detectada: {$imageUrl}\n";
-                    echo "  Hash anterior: {$existingHash}\n";
-                    echo "  Hash nuevo: {$newHash}\n";
-                    
-                    // Reemplazar la imagen existente con la nueva
-                    file_put_contents($localPath, $imageData);
-                    
-                    // Actualizar registro en la base de datos
-                    $stmt = $this->db->prepare("
-                        UPDATE images 
-                        SET updated_at = NOW() 
-                        WHERE id = ?
-                    ");
-                    $stmt->execute([$existingImage['id']]);
-                    
-                    $updatedCount++;
-                    $this->stats['imagenes_actualizadas']++;
-                }
-                
-                // Eliminar archivo temporal
-                @unlink($tempFile);
-                
             } catch (Exception $e) {
-                echo "Propiedad #{$propertyRef}: Error al verificar actualización de imagen: {$e->getMessage()}\n";
+                echo "Propiedad #{$propertyRef}: Error al verificar headers de imagen: {$e->getMessage()}\n";
+                // Si hay error al verificar, asumimos que no necesita actualización para evitar descargas innecesarias
+                $needsUpdate = false;
+            }
+            
+            // Solo si detectamos que la imagen ha cambiado, la descargamos para comparar hashes
+            if ($needsUpdate) {
+                try {
+                    // Descargar la imagen temporalmente para comparar
+                    $tempFile = tempnam(sys_get_temp_dir(), 'img_');
+                    $imageData = @file_get_contents($imageUrl);
+                    
+                    if ($imageData === false) {
+                        echo "Propiedad #{$propertyRef}: No se pudo descargar la imagen para comparación: {$imageUrl}\n";
+                        continue;
+                    }
+                    
+                    file_put_contents($tempFile, $imageData);
+                    
+                    // Calcular hashes para comparar
+                    $existingHash = md5_file($localPath);
+                    $newHash = md5_file($tempFile);
+                    
+                    // Si los hashes son diferentes, la imagen ha cambiado
+                    if ($existingHash !== $newHash) {
+                        echo "Propiedad #{$propertyRef}: Imagen actualizada detectada: {$imageUrl}\n";
+                        echo "  Hash anterior: {$existingHash}\n";
+                        echo "  Hash nuevo: {$newHash}\n";
+                        
+                        // Reemplazar la imagen existente con la nueva
+                        file_put_contents($localPath, $imageData);
+                        
+                        // Actualizar registro en la base de datos
+                        $stmt = $this->db->prepare("
+                            UPDATE images 
+                            SET updated_at = NOW() 
+                            WHERE id = ?
+                        ");
+                        $stmt->execute([$existingImage['id']]);
+                        
+                        $updatedCount++;
+                        $this->stats['imagenes_actualizadas']++;
+                    } else {
+                        echo "Propiedad #{$propertyRef}: Imagen no ha cambiado según hash: {$imageUrl}\n";
+                    }
+                    
+                    // Eliminar archivo temporal
+                    @unlink($tempFile);
+                    
+                } catch (Exception $e) {
+                    echo "Propiedad #{$propertyRef}: Error al verificar actualización de imagen: {$e->getMessage()}\n";
+                }
             }
         }
         

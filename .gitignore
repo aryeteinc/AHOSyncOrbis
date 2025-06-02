@@ -1,5 +1,5 @@
 # Archivos de configuración con credenciales
-/config/.env
+# /config/.env
 
 # Archivos de logs
 /logs/*.log

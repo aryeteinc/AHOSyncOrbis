@@ -197,13 +197,25 @@ class ImageProcessorLaravel {
                     if (file_exists($existingImage['local_url'])) {
                         echo "Inmueble #{$propertyRef}: Imagen " . ($i+1) . "/" . count($images) . " ya existe localmente en {$existingImage['local_url']}\n";
                         
+                        // Obtener el hash de la imagen existente si no está en la base de datos
+                        if (empty($existingImage['hash'])) {
+                            $existingHash = md5_file($existingImage['local_url']);
+                            
+                            // Actualizar el hash en la base de datos para futuras comparaciones
+                            $updateHashStmt = $this->db->prepare("UPDATE images SET hash = ? WHERE id = ?");
+                            $updateHashStmt->execute([$existingHash, $existingImage['id']]);
+                            
+                            echo "Inmueble #{$propertyRef}: Actualizado hash de imagen existente: {$existingHash}\n";
+                        }
+                        
                         // Agregar la imagen a la lista de procesadas con su ID existente
                         $processedImages[] = [
                             'id' => $existingImage['id'],
                             'url' => $imageUrl,
                             'local_url' => $existingImage['local_url'],
                             'order_num' => $i,
-                            'is_downloaded' => 1
+                            'is_downloaded' => 1,
+                            'hash' => $existingImage['hash'] ?? md5_file($existingImage['local_url'])
                         ];
                         
                         $imageRegistered = true;
